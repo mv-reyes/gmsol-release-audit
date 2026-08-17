@@ -1,0 +1,11 @@
+[package]
+name = "gmsol-release-audit"
+version = "0.1.0"
+edition = "2021"
+description = "Release-artifact and authority-hygiene auditor for the GMTrade (gmsol) deployment"
+license = "MIT"
+
+[dependencies]
+sol-rpc-mini = { git = "https://github.com/mv-reyes/sol-rpc-mini", rev = "2deb0ebb9a2af93f1bba86323768a18b51e8ce9a" }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
