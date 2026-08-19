@@ -6,6 +6,6 @@ description = "Release-artifact and authority-hygiene auditor for the GMTrade (g
 license = "MIT"
 
 [dependencies]
-sol-rpc-mini = { git = "https://github.com/mv-reyes/sol-rpc-mini", rev = "2deb0ebb9a2af93f1bba86323768a18b51e8ce9a" }
+sol-rpc-mini = { git = "https://github.com/mv-reyes/sol-rpc-mini", rev = "b9383a96727f69424a94ae042b6b8145e37eff1c" }
 serde_json = "1"
 ureq = { version = "2", features = ["json"] }
