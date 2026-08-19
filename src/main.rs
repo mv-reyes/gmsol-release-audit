@@ -11,7 +11,7 @@
 //! Everything is read-only: public registry metadata + public RPC reads.
 
 use serde_json::Value;
-use sol_rpc_mini::{from_base58, to_base58, RpcClient};
+use sol_rpc_mini::{to_base58, RpcClient};
 
 // ---------------------------------------------------------------------------
 // constants (all public, from the gmsol deployment / SECURITY.md / docs)
@@ -33,9 +33,9 @@ const MULTISIG: &str = "CxnEVpQQcYa628TywzHGXeJ2jdVmbU51rnERat9xunP1";
 
 // RoleStore layout in the Store account (verified against the live account;
 // see programs/store/src/states/roles.rs — RoleMap then Members fixed_map).
-const ROLEMAP_BASE: usize = 42; // after discriminator + version/bump/key_seed/key
+const ROLEMAP_BASE: usize = 80;
 const ROLE_ENTRY: usize = 66; // 32-byte key hash + RoleMetadata(34)
-const ROLEMAP_COUNT: usize = ROLEMAP_BASE + ROLE_ENTRY * 32;
+const ROLEMAP_COUNT: usize = 2192;
 const MEMBERS_BASE: usize = 2196; // Members map data
 const MEMBER_ENTRY: usize = 36; // pubkey + u32 role bitmap
 const MEMBERS_COUNT: usize = MEMBERS_BASE + MEMBER_ENTRY * 64;
@@ -93,8 +93,22 @@ fn days_since(ts: Option<i64>) -> Option<i64> {
 }
 
 fn last_activity(rpc: &RpcClient, address: &str) -> Option<i64> {
-    let sigs = rpc.get_signatures(address, 1).ok()?;
-    sigs.as_array()?.first()?["blockTime"].as_i64()
+    // public RPCs rate-limit; retry once, and pace calls politely
+    for attempt in 0..2 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+        }
+        if let Ok(sigs) = rpc.get_signatures(address, 1) {
+            if let Some(ts) = sigs
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|s| s["blockTime"].as_i64())
+            {
+                return Some(ts);
+            }
+        }
+    }
+    None
 }
 
 fn role_name(meta: &[u8]) -> String {
@@ -125,8 +139,10 @@ fn check_release_artifacts() {
         }
     };
 
+    // sort by publish time (registry `time` map), not lexicographically
+    let times = meta["time"].as_object();
     let mut sorted: Vec<&String> = versions.keys().collect();
-    sorted.sort();
+    sorted.sort_by_key(|v| times.and_then(|t| t.get(*v)).and_then(|t| t.as_str()).map(String::from).unwrap_or_default());
     for ver in sorted.iter().rev().take(4) {
         let v = &versions[*ver];
         let size = v["dist"]["unpackedSize"].as_u64().unwrap_or(0);
@@ -201,13 +217,14 @@ fn check_authority_hygiene(rpc: &RpcClient) {
     }
 
     let role_count = u32::from_le_bytes(raw[ROLEMAP_COUNT..ROLEMAP_COUNT + 4].try_into().unwrap()) as usize;
-    let mut role_names: Vec<String> = Vec::new();
+    // (bit index, name) — the bit position is RoleMetadata.index, not map order
+    let mut roles: Vec<(u8, String)> = Vec::new();
     for i in 0..role_count.min(32) {
         let base = ROLEMAP_BASE + i * ROLE_ENTRY;
         let meta = &raw[base + 32..base + ROLE_ENTRY];
-        role_names.push(role_name(meta));
+        roles.push((meta[33], role_name(meta)));
     }
-    println!("  {} enabled roles tracked", role_names.len());
+    println!("  {} enabled roles tracked", roles.len());
 
     let member_count = u32::from_le_bytes(raw[MEMBERS_COUNT..MEMBERS_COUNT + 4].try_into().unwrap()) as usize;
     if member_count > 64 {
@@ -220,14 +237,14 @@ fn check_authority_hygiene(rpc: &RpcClient) {
         let base = MEMBERS_BASE + i * MEMBER_ENTRY;
         let pubkey = to_base58(&raw[base..base + 32]);
         let bitmap = u32::from_le_bytes(raw[base + 32..base + 36].try_into().unwrap());
-        let held: Vec<&str> = role_names
+        let held: Vec<&str> = roles
             .iter()
-            .enumerate()
-            .filter(|(idx, _)| bitmap & (1 << idx) != 0)
+            .filter(|(idx, _)| bitmap & (1u32 << idx) != 0)
             .map(|(_, n)| n.as_str())
             .collect();
 
-        let days = last_activity(rpc, &pubkey).and_then(days_since);
+        std::thread::sleep(std::time::Duration::from_millis(350));
+        let days = days_since(last_activity(rpc, &pubkey));
         let dormancy = match days {
             Some(d) if d > DORMANCY_WARN_DAYS => format!("DORMANT {d}d  <-- review"),
             Some(d) => format!("active {d}d ago"),
@@ -272,7 +289,8 @@ fn check_governance(rpc: &RpcClient) {
     for i in 0..mlen {
         let base = 132 + i * 33;
         let pubkey = to_base58(&raw[base..base + 32]);
-        let days = last_activity(rpc, &pubkey).and_then(days_since);
+        std::thread::sleep(std::time::Duration::from_millis(350));
+        let days = days_since(last_activity(rpc, &pubkey));
         match days {
             Some(d) if d > DORMANCY_WARN_DAYS => {
                 println!("  {pubkey}  DORMANT {d}d  <-- review");
